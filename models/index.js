@@ -1,11 +1,29 @@
 const { Sequelize } = require('sequelize');
 const path = require('path');
 
-const sequelize = new Sequelize({
-  dialect: 'sqlite',
-  storage: path.join(__dirname, '../database.sqlite'),
-  logging: false,
-});
+let sequelize;
+
+if (process.env.DATABASE_URL) {
+  // PostgreSQL (Supabase)
+  sequelize = new Sequelize(process.env.DATABASE_URL, {
+    dialect: 'postgres',
+    protocol: 'postgres',
+    logging: false,
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false,
+      },
+    },
+  });
+} else {
+  // SQLite fallback for local dev
+  sequelize = new Sequelize({
+    dialect: 'sqlite',
+    storage: path.join(__dirname, '../database.sqlite'),
+    logging: false,
+  });
+}
 
 // Import models
 const User = require('./User')(sequelize);
