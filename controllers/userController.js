@@ -79,3 +79,18 @@ const searchUsers = async (req, res) => {
 };
 
 module.exports = { getProfile, updateProfile, updateLocationSharing, searchUsers };
+
+const getAllUsers = async (req, res) => {
+  try {
+    const users = await User.findAll({
+      where: { id: { [Op.ne]: req.user.id }, isBanned: false },
+      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen', 'isInApp'],
+      order: [['isOnline', 'DESC'], ['displayName', 'ASC']],
+    });
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+};
+
+module.exports = { getProfile, updateProfile, updateLocationSharing, searchUsers, getAllUsers };
