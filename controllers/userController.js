@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const getProfile = async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id, {
-      attributes: { exclude: ['password', 'locationLat', 'locationLng'] } // never expose location via profile
+      attributes: { exclude: ['password', 'locationLat', 'locationLng'] }
     });
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
@@ -27,7 +27,6 @@ const updateProfile = async (req, res) => {
   }
 };
 
-// OPT-IN location sharing — user explicitly enables this
 const updateLocationSharing = async (req, res) => {
   try {
     const { enabled, lat, lng } = req.body;
@@ -40,7 +39,6 @@ const updateLocationSharing = async (req, res) => {
       updates.locationLng = lng;
       updates.locationUpdatedAt = new Date();
     } else {
-      // Clear location data when user opts out
       updates.locationLat = null;
       updates.locationLng = null;
       updates.locationUpdatedAt = null;
@@ -78,13 +76,11 @@ const searchUsers = async (req, res) => {
   }
 };
 
-module.exports = { getProfile, updateProfile, updateLocationSharing, searchUsers };
-
 const getAllUsers = async (req, res) => {
   try {
     const users = await User.findAll({
       where: { id: { [Op.ne]: req.user.id }, isBanned: false },
-      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen', 'isInApp'],
+      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen'],
       order: [['isOnline', 'DESC'], ['displayName', 'ASC']],
     });
     res.json(users);
