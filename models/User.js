@@ -1,0 +1,26 @@
+const { DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => sequelize.define('User', {
+  id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+  username: { type: DataTypes.STRING, unique: true, allowNull: false },
+  email: { type: DataTypes.STRING, unique: true, allowNull: false },
+  password: { type: DataTypes.STRING, allowNull: false },
+  displayName: { type: DataTypes.STRING },
+  avatar: { type: DataTypes.STRING, defaultValue: null },
+  bio: { type: DataTypes.TEXT, defaultValue: '' },
+  role: { type: DataTypes.ENUM('user', 'moderator', 'admin'), defaultValue: 'user' },
+  isOnline: { type: DataTypes.BOOLEAN, defaultValue: false },
+  lastSeen: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+  // Privacy & opt-in settings
+  locationSharingEnabled: { type: DataTypes.BOOLEAN, defaultValue: false }, // MUST be explicit opt-in
+  locationLat: { type: DataTypes.FLOAT, defaultValue: null },
+  locationLng: { type: DataTypes.FLOAT, defaultValue: null },
+  locationUpdatedAt: { type: DataTypes.DATE, defaultValue: null },
+  showOnlineStatus: { type: DataTypes.BOOLEAN, defaultValue: true },
+  readReceipts: { type: DataTypes.BOOLEAN, defaultValue: true },
+  referralCode: { type: DataTypes.STRING, unique: true },
+  referralPoints: { type: DataTypes.INTEGER, defaultValue: 0 },
+  isBanned: { type: DataTypes.BOOLEAN, defaultValue: false },
+  banReason: { type: DataTypes.STRING, defaultValue: null },
+  notificationsEnabled: { type: DataTypes.BOOLEAN, defaultValue: true },
+});
