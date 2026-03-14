@@ -7,7 +7,7 @@ const { JWT_SECRET } = require('../middleware/auth');
 const generateToken = (user) => jwt.sign(
   { id: user.id, role: user.role },
   JWT_SECRET,
-  { expiresIn: '7d' }
+  { expiresIn: '30d' }
 );
 
 const register = async (req, res) => {
@@ -16,27 +16,29 @@ const register = async (req, res) => {
     if (!username || !email || !password) {
       return res.status(400).json({ error: 'Username, email and password are required' });
     }
-    const existing = await User.findOne({ where: { email } });
+
+    const existing = await User.findOne({ where: { email: email.toLowerCase().trim() } });
     if (existing) return res.status(400).json({ error: 'Email already registered' });
-    const existingUsername = await User.findOne({ where: { username } });
+
+    const existingUsername = await User.findOne({ where: { username: username.toLowerCase().trim() } });
     if (existingUsername) return res.status(400).json({ error: 'Username taken' });
 
-    const hashed = await bcrypt.hash(password, 12);
+    const hashed = await bcrypt.hash(password, 10);
     const referralCode = uuidv4().split('-')[0].toUpperCase();
 
-    // Check if referred
     let referredBy = null;
     if (req.body.referralCode) {
       referredBy = await User.findOne({ where: { referralCode: req.body.referralCode } });
     }
 
     const user = await User.create({
-      username, email, password: hashed,
+      username: username.toLowerCase().trim(),
+      email: email.toLowerCase().trim(),
+      password: hashed,
       displayName: displayName || username,
       referralCode,
     });
 
-    // Process referral
     if (referredBy) {
       const { Referral } = require('../models');
       await Referral.create({
@@ -52,24 +54,28 @@ const register = async (req, res) => {
     delete safe.password;
     res.status(201).json({ token, user: safe });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Registration failed' });
+    console.error('Register error:', err);
+    res.status(500).json({ error: 'Registration failed: ' + err.message });
   }
 };
 
 const login = async (req, res) => {
   try {
     const { emailOrUsername, password } = req.body;
+    if (!emailOrUsername || !password) {
+      return res.status(400).json({ error: 'Email/username and password are required' });
+    }
+
+    const identifier = emailOrUsername.toLowerCase().trim();
     const user = await User.findOne({
-      where: emailOrUsername.includes('@')
-        ? { email: emailOrUsername }
-        : { username: emailOrUsername }
+      where: identifier.includes('@') ? { email: identifier } : { username: identifier }
     });
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    if (!user) return res.status(401).json({ error: 'No account found with that email or username' });
     if (user.isBanned) return res.status(403).json({ error: 'Account suspended', reason: user.banReason });
 
     const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!valid) return res.status(401).json({ error: 'Wrong password — please try again' });
 
     await user.update({ isOnline: true, lastSeen: new Date() });
     const token = generateToken(user);
@@ -77,7 +83,8 @@ const login = async (req, res) => {
     delete safe.password;
     res.json({ token, user: safe });
   } catch (err) {
-    res.status(500).json({ error: 'Login failed' });
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Login failed: ' + err.message });
   }
 };
 
