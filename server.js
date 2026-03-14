@@ -18,8 +18,8 @@ const friendRoutes = require('./routes/friends');
 
 const app = express();
 const server = http.createServer(app);
-const allowedOrigins = process.env.CLIENT_URL 
-  ? process.env.CLIENT_URL.split(',') 
+const allowedOrigins = process.env.CLIENT_URL
+  ? process.env.CLIENT_URL.split(',')
   : ['http://localhost:3000', 'http://localhost:3001'];
 
 const io = new Server(server, {
@@ -28,10 +28,6 @@ const io = new Server(server, {
 
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
-app.use('/uploads', express.static('uploads'));
-
-// Attach io to req
-app.use((req, res, next) => { req.io = io; next(); });
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -43,7 +39,12 @@ app.use('/api/referrals', referralRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/friends', friendRoutes);
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
+// Health check endpoint — used by UptimeRobot to keep server awake
+app.get('/api/health', (req, res) => res.json({ 
+  status: 'ok', 
+  time: new Date(),
+  uptime: process.uptime()
+}));
 
 // Socket.io
 initSocketHandlers(io);
