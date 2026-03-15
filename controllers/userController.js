@@ -19,9 +19,9 @@ const updateProfile = async (req, res) => {
     const updates = {};
     allowed.forEach(key => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
 
-    // Handle avatar upload
+    // Cloudinary gives secure_url directly
     if (req.file) {
-      updates.avatar = `/uploads/${req.file.filename}`;
+      updates.avatar = req.file.path || req.file.secure_url;
     }
 
     await req.user.update(updates);
@@ -29,7 +29,8 @@ const updateProfile = async (req, res) => {
     delete safe.password;
     res.json(safe);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to update profile' });
+    console.error('Profile update error:', err);
+    res.status(500).json({ error: 'Failed to update profile: ' + err.message });
   }
 };
 
@@ -47,12 +48,11 @@ const updateLocationSharing = async (req, res) => {
     } else {
       updates.locationLat = null;
       updates.locationLng = null;
-      updates.locationUpdatedAt = null;
     }
     await req.user.update(updates);
-    res.json({ success: true, locationSharingEnabled: !!enabled });
+    res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to update location settings' });
+    res.status(500).json({ error: 'Failed to update location' });
   }
 };
 
@@ -82,7 +82,7 @@ const getAllUsers = async (req, res) => {
   try {
     const users = await User.findAll({
       where: { id: { [Op.ne]: req.user.id }, isBanned: false },
-      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen', 'followersCount'],
+      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen'],
       order: [['isOnline', 'DESC'], ['displayName', 'ASC']],
     });
     res.json(users);
