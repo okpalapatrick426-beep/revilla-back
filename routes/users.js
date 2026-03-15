@@ -13,8 +13,8 @@ const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 router.get('/all', auth, getAllUsers);
 router.get('/search', auth, searchUsers);
-router.get('/:id', auth, getProfile);
 router.put('/profile', auth, upload.single('avatar'), updateProfile);
 router.put('/location', auth, updateLocationSharing);
+router.get('/:id', auth, getProfile);
 
 module.exports = router;
