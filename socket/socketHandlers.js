@@ -1,115 +1,86 @@
-const jwt = require('jsonwebtoken');
-const { User, Message } = require('../models');
-const { JWT_SECRET } = require('../middleware/auth');
+const { User } = require('../models');
 
-const onlineUsers = new Map(); // userId -> socketId
+// Track active socket connections
+const onlineUsers = new Map(); // userId -> { socketId, lastSeen, inApp }
 
-const initSocketHandlers = (io) => {
-  // Auth middleware for socket
-  io.use(async (socket, next) => {
-    const token = socket.handshake.auth?.token;
-    if (!token) return next(new Error('Authentication required'));
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      const user = await User.findByPk(decoded.id);
-      if (!user || user.isBanned) return next(new Error('Not authorized'));
-      socket.user = user;
-      next();
-    } catch (err) {
-      next(new Error('Invalid token'));
-    }
-  });
+module.exports = (io) => {
+  io.on('connection', (socket) => {
+    const userId = socket.handshake.auth?.userId;
+    if (!userId) return;
 
-  io.on('connection', async (socket) => {
-    const user = socket.user;
-    console.log(`🔌 ${user.username} connected`);
+    // Mark user as online and IN APP
+    onlineUsers.set(userId, { socketId: socket.id, lastSeen: Date.now(), inApp: true });
+    User.update({ isOnline: true, lastSeen: new Date() }, { where: { id: userId } }).catch(() => {});
 
-    // Mark online
-    onlineUsers.set(user.id, socket.id);
-    await user.update({ isOnline: true, lastSeen: new Date() });
-    io.emit('user_online', { userId: user.id });
+    // Broadcast to everyone that this user is now online
+    io.emit('userOnline', { userId, inApp: true });
+
+    // Send current online users list to the newly connected user
+    const onlineList = Array.from(onlineUsers.entries()).map(([uid, data]) => ({
+      userId: uid,
+      inApp: data.inApp,
+      lastSeen: data.lastSeen,
+    }));
+    socket.emit('onlineUsers', onlineList);
 
     // Join personal room
-    socket.join(`user:${user.id}`);
+    socket.join(userId);
 
-    // Join DM rooms
-    socket.on('join_dm', ({ userId }) => {
-      const room = `dm:${[user.id, userId].sort().join('-')}`;
-      socket.join(room);
+    // ─── MESSAGING ───────────────────────────────────────────
+    socket.on('sendMessage', (msg) => {
+      const targetId = msg.receiverId || msg.groupId;
+      if (targetId) io.to(targetId).emit('newMessage', msg);
     });
 
-    // Join group room
-    socket.on('join_group', ({ groupId }) => {
-      socket.join(`group:${groupId}`);
+    socket.on('messageDeleted', ({ id, deletedForEveryone, to }) => {
+      if (to) io.to(to).emit('messageDeleted', { id, deletedForEveryone });
     });
 
-    // Typing indicators
-    socket.on('typing_start', ({ recipientId, groupId }) => {
-      const room = groupId ? `group:${groupId}` : `dm:${[user.id, recipientId].sort().join('-')}`;
-      socket.to(room).emit('typing', { userId: user.id, username: user.displayName });
+    // ─── TYPING (with live text preview) ─────────────────────
+    socket.on('typing', ({ to, text }) => {
+      socket.to(to).emit('typing', { userId, text: text || '' });
     });
 
-    socket.on('typing_stop', ({ recipientId, groupId }) => {
-      const room = groupId ? `group:${groupId}` : `dm:${[user.id, recipientId].sort().join('-')}`;
-      socket.to(room).emit('stop_typing', { userId: user.id });
+    socket.on('stopTyping', ({ to }) => {
+      socket.to(to).emit('stopTyping', { userId });
     });
 
-    // Real-time message send via socket
-    socket.on('send_message', async ({ recipientId, groupId, content, type, replyToId }) => {
-      try {
-        const message = await Message.create({
-          senderId: user.id, recipientId, groupId,
-          content, type: type || 'text', replyToId,
-        });
-        const full = await Message.findByPk(message.id, {
-          include: [{ model: User, as: 'sender', attributes: ['id', 'username', 'displayName', 'avatar'] }]
-        });
-        const room = groupId ? `group:${groupId}` : `dm:${[user.id, recipientId].sort().join('-')}`;
-        io.to(room).emit('new_message', full);
-      } catch (err) {
-        socket.emit('error', { message: 'Failed to send message' });
+    // ─── LOCATION SHARING (opt-in) ────────────────────────────
+    socket.on('shareLocation', ({ to, lat, lng, address }) => {
+      io.to(to).emit('locationShared', { userId, lat, lng, address, timestamp: Date.now() });
+      // Also persist to DB
+      User.update(
+        { locationLat: lat, locationLng: lng, locationUpdatedAt: new Date(), locationSharingEnabled: true },
+        { where: { id: userId } }
+      ).catch(() => {});
+    });
+
+    socket.on('stopSharingLocation', ({ to }) => {
+      io.to(to).emit('locationStopped', { userId });
+      User.update(
+        { locationSharingEnabled: false, locationLat: null, locationLng: null },
+        { where: { id: userId } }
+      ).catch(() => {});
+    });
+
+    // ─── READ RECEIPTS ────────────────────────────────────────
+    socket.on('markRead', ({ to, messageIds }) => {
+      socket.to(to).emit('messagesRead', { messageIds, readBy: userId });
+    });
+
+    // ─── HEARTBEAT (keeps "in app" status accurate) ───────────
+    socket.on('heartbeat', () => {
+      if (onlineUsers.has(userId)) {
+        onlineUsers.get(userId).lastSeen = Date.now();
+        onlineUsers.get(userId).inApp = true;
       }
     });
 
-    // Read receipts
-    socket.on('mark_read', async ({ messageId, senderId }) => {
-      const msg = await Message.findByPk(messageId);
-      if (msg) {
-        const readBy = msg.readBy || [];
-        if (!readBy.includes(user.id)) {
-          readBy.push(user.id);
-          await msg.update({ readBy });
-          io.to(`user:${senderId}`).emit('message_read', { messageId, readBy: user.id });
-        }
-      }
-    });
-
-    // OPT-IN: User shares location update (only if they've enabled it)
-    socket.on('update_location', async ({ lat, lng }) => {
-      if (!user.locationSharingEnabled) {
-        socket.emit('error', { message: 'Location sharing not enabled. Enable it in settings first.' });
-        return;
-      }
-      await user.update({ locationLat: lat, locationLng: lng, locationUpdatedAt: new Date() });
-      // Broadcast to admin room only
-      io.to('admin_room').emit('user_location_update', {
-        userId: user.id, username: user.username, lat, lng, updatedAt: new Date()
-      });
-    });
-
-    // Admin joins admin room
-    if (user.role === 'admin' || user.role === 'moderator') {
-      socket.join('admin_room');
-    }
-
-    // Disconnect
-    socket.on('disconnect', async () => {
-      onlineUsers.delete(user.id);
-      await user.update({ isOnline: false, lastSeen: new Date() });
-      io.emit('user_offline', { userId: user.id, lastSeen: new Date() });
-      console.log(`❌ ${user.username} disconnected`);
+    // ─── DISCONNECT ───────────────────────────────────────────
+    socket.on('disconnect', () => {
+      onlineUsers.delete(userId);
+      User.update({ isOnline: false, lastSeen: new Date() }, { where: { id: userId } }).catch(() => {});
+      io.emit('userOffline', { userId, lastSeen: Date.now() });
     });
   });
 };
-
-module.exports = { initSocketHandlers, onlineUsers };
