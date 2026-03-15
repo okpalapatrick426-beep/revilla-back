@@ -8,19 +8,29 @@ module.exports = (sequelize) => sequelize.define('User', {
   displayName: { type: DataTypes.STRING },
   avatar: { type: DataTypes.STRING, defaultValue: null },
   bio: { type: DataTypes.TEXT, defaultValue: '' },
-  role: { type: DataTypes.ENUM('user', 'moderator', 'admin'), defaultValue: 'user' },
+  role: { type: DataTypes.STRING, defaultValue: 'user' },
   isOnline: { type: DataTypes.BOOLEAN, defaultValue: false },
   lastSeen: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
-  // Privacy & opt-in settings
-  locationSharingEnabled: { type: DataTypes.BOOLEAN, defaultValue: false }, // MUST be explicit opt-in
+  locationSharingEnabled: { type: DataTypes.BOOLEAN, defaultValue: false },
   locationLat: { type: DataTypes.FLOAT, defaultValue: null },
   locationLng: { type: DataTypes.FLOAT, defaultValue: null },
   locationUpdatedAt: { type: DataTypes.DATE, defaultValue: null },
   showOnlineStatus: { type: DataTypes.BOOLEAN, defaultValue: true },
   readReceipts: { type: DataTypes.BOOLEAN, defaultValue: true },
-  referralCode: { type: DataTypes.STRING, unique: true },
-  referralPoints: { type: DataTypes.INTEGER, defaultValue: 0 },
-  isBanned: { type: DataTypes.BOOLEAN, defaultValue: false },
-  banReason: { type: DataTypes.STRING, defaultValue: null },
   notificationsEnabled: { type: DataTypes.BOOLEAN, defaultValue: true },
+  isBanned: { type: DataTypes.BOOLEAN, defaultValue: false },
+  isVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
+  referralCode: { type: DataTypes.STRING, unique: true },
+  referredBy: { type: DataTypes.UUID, defaultValue: null },
+  followersCount: { type: DataTypes.INTEGER, defaultValue: 0 },
+  followingCount: { type: DataTypes.INTEGER, defaultValue: 0 },
+}, {
+  timestamps: true,
+  hooks: {
+    beforeCreate: (user) => {
+      if (!user.referralCode) {
+        user.referralCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+      }
+    }
+  }
 });
