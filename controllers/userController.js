@@ -15,9 +15,15 @@ const getProfile = async (req, res) => {
 
 const updateProfile = async (req, res) => {
   try {
-    const allowed = ['displayName', 'bio', 'avatar', 'showOnlineStatus', 'readReceipts', 'notificationsEnabled'];
+    const allowed = ['displayName', 'bio', 'showOnlineStatus', 'readReceipts', 'notificationsEnabled'];
     const updates = {};
     allowed.forEach(key => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
+
+    // Handle avatar upload
+    if (req.file) {
+      updates.avatar = `/uploads/${req.file.filename}`;
+    }
+
     await req.user.update(updates);
     const safe = req.user.toJSON();
     delete safe.password;
@@ -31,7 +37,7 @@ const updateLocationSharing = async (req, res) => {
   try {
     const { enabled, lat, lng } = req.body;
     if (enabled && (lat === undefined || lng === undefined)) {
-      return res.status(400).json({ error: 'Location coordinates required when enabling location sharing' });
+      return res.status(400).json({ error: 'Location coordinates required' });
     }
     const updates = { locationSharingEnabled: !!enabled };
     if (enabled) {
@@ -44,11 +50,7 @@ const updateLocationSharing = async (req, res) => {
       updates.locationUpdatedAt = null;
     }
     await req.user.update(updates);
-    res.json({
-      success: true,
-      locationSharingEnabled: !!enabled,
-      message: enabled ? 'Location sharing enabled' : 'Location sharing disabled and data cleared'
-    });
+    res.json({ success: true, locationSharingEnabled: !!enabled });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update location settings' });
   }
@@ -61,8 +63,8 @@ const searchUsers = async (req, res) => {
     const users = await User.findAll({
       where: {
         [Op.or]: [
-          { username: { [Op.like]: `%${q}%` } },
-          { displayName: { [Op.like]: `%${q}%` } },
+          { username: { [Op.iLike]: `%${q}%` } },
+          { displayName: { [Op.iLike]: `%${q}%` } },
         ],
         id: { [Op.ne]: req.user.id },
         isBanned: false,
@@ -80,7 +82,7 @@ const getAllUsers = async (req, res) => {
   try {
     const users = await User.findAll({
       where: { id: { [Op.ne]: req.user.id }, isBanned: false },
-      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen'],
+      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen', 'followersCount'],
       order: [['isOnline', 'DESC'], ['displayName', 'ASC']],
     });
     res.json(users);
