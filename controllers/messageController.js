@@ -1,7 +1,8 @@
 const { Message, User } = require('../models');
 const { Op } = require('sequelize');
+const path = require('path');
 
-const getConversation = async (req, res) => {
+const getMessages = async (req, res) => {
   try {
     const { userId } = req.params;
     const myId = req.user.id;
@@ -9,58 +10,45 @@ const getConversation = async (req, res) => {
       where: {
         deletedForEveryone: false,
         [Op.or]: [
-          { senderId: myId, recipientId: userId },
-          { senderId: userId, recipientId: myId },
-        ]
+          { senderId: myId, receiverId: userId },
+          { senderId: userId, receiverId: myId },
+        ],
       },
-      include: [{ model: User, as: 'sender', attributes: ['id', 'username', 'displayName', 'avatar'] }],
       order: [['createdAt', 'ASC']],
-      limit: 100,
     });
-    // Mark as read
-    await Message.update(
-      { readBy: req.user.id },
-      { where: { senderId: userId, recipientId: myId, deletedForEveryone: false } }
-    );
-    res.json(messages);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch messages' });
-  }
-};
 
-const getGroupMessages = async (req, res) => {
-  try {
-    const { groupId } = req.params;
-    const messages = await Message.findAll({
-      where: { groupId, deletedForEveryone: false },
-      include: [{ model: User, as: 'sender', attributes: ['id', 'username', 'displayName', 'avatar'] }],
-      order: [['createdAt', 'ASC']],
-      limit: 100,
+    // Filter out messages deleted for this user
+    const filtered = messages.filter(m => {
+      const deletedFor = JSON.parse(m.deletedFor || '[]');
+      return !deletedFor.includes(myId);
     });
-    res.json(messages);
+
+    res.json(filtered);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch group messages' });
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch messages' });
   }
 };
 
 const sendMessage = async (req, res) => {
   try {
-    const { recipientId, groupId, content, type, mediaUrl, replyToId } = req.body;
-    if (!content && !mediaUrl) return res.status(400).json({ error: 'Message content required' });
-    const message = await Message.create({
-      senderId: req.user.id, recipientId, groupId,
-      content, type: type || 'text', mediaUrl, replyToId,
+    const { content, receiverId, groupId, type, replyToId, replyToContent } = req.body;
+    const mediaUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
+    const msg = await Message.create({
+      senderId: req.user.id,
+      receiverId: receiverId || null,
+      groupId: groupId || null,
+      content: content || (mediaUrl ? 'Image' : ''),
+      type: type || (mediaUrl ? 'image' : 'text'),
+      mediaUrl,
+      replyToId: replyToId || null,
+      replyToContent: replyToContent || null,
     });
-    const full = await Message.findByPk(message.id, {
-      include: [{ model: User, as: 'sender', attributes: ['id', 'username', 'displayName', 'avatar'] }]
-    });
-    // Emit via socket
-    if (req.io) {
-      const room = groupId ? `group:${groupId}` : `dm:${[req.user.id, recipientId].sort().join('-')}`;
-      req.io.to(room).emit('new_message', full);
-    }
-    res.status(201).json(full);
+
+    res.status(201).json(msg);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Failed to send message' });
   }
 };
@@ -68,26 +56,30 @@ const sendMessage = async (req, res) => {
 const deleteMessage = async (req, res) => {
   try {
     const { id } = req.params;
-    const { forEveryone } = req.body;
-    const message = await Message.findByPk(id);
-    if (!message) return res.status(404).json({ error: 'Message not found' });
-    if (message.senderId !== req.user.id && req.user.role === 'user') {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    if (forEveryone) {
-      await message.update({ deletedForEveryone: true, content: 'This message was deleted', mediaUrl: null });
+    const { deleteFor } = req.body; // 'me' or 'everyone'
+    const myId = req.user.id;
+
+    const msg = await Message.findByPk(id);
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+    if (deleteFor === 'everyone') {
+      if (msg.senderId !== myId) {
+        return res.status(403).json({ error: 'You can only delete your own messages for everyone' });
+      }
+      await msg.update({ deletedForEveryone: true, content: 'This message was deleted' });
+      return res.json({ success: true, deletedForEveryone: true, id });
     } else {
-      await message.update({ isDeleted: true });
+      // Delete for me only
+      const deletedFor = JSON.parse(msg.deletedFor || '[]');
+      if (!deletedFor.includes(myId)) {
+        deletedFor.push(myId);
+      }
+      await msg.update({ deletedFor: JSON.stringify(deletedFor) });
+      return res.json({ success: true, deletedForMe: true, id });
     }
-    if (req.io) {
-      const room = message.groupId
-        ? `group:${message.groupId}`
-        : `dm:${[message.senderId, message.recipientId].sort().join('-')}`;
-      req.io.to(room).emit('message_deleted', { id, forEveryone });
-    }
-    res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to delete message' });
+    console.error(err);
+    res.status(500).json({ error: 'Delete failed' });
   }
 };
 
@@ -95,18 +87,32 @@ const reactToMessage = async (req, res) => {
   try {
     const { id } = req.params;
     const { emoji } = req.body;
-    const message = await Message.findByPk(id);
-    if (!message) return res.status(404).json({ error: 'Not found' });
-    const reactions = { ...message.reactions };
+    const msg = await Message.findByPk(id);
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+    const reactions = JSON.parse(msg.reactions || '{}');
     if (!reactions[emoji]) reactions[emoji] = [];
     const idx = reactions[emoji].indexOf(req.user.id);
-    if (idx > -1) reactions[emoji].splice(idx, 1);
+    if (idx > -1) reactions[emoji].splice(idx, 1); // toggle off
     else reactions[emoji].push(req.user.id);
-    await message.update({ reactions });
-    res.json(message);
+
+    await msg.update({ reactions: JSON.stringify(reactions) });
+    res.json(msg);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to react' });
+    res.status(500).json({ error: 'React failed' });
   }
 };
 
-module.exports = { getConversation, getGroupMessages, sendMessage, deleteMessage, reactToMessage };
+const pinMessage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const msg = await Message.findByPk(id);
+    if (!msg) return res.status(404).json({ error: 'Not found' });
+    await msg.update({ isPinned: !msg.isPinned });
+    res.json(msg);
+  } catch (err) {
+    res.status(500).json({ error: 'Pin failed' });
+  }
+};
+
+module.exports = { getMessages, sendMessage, deleteMessage, reactToMessage, pinMessage };
