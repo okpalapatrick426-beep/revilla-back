@@ -1,58 +1,39 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
 const { User } = require('../models');
-const { JWT_SECRET } = require('../middleware/auth');
-
-const generateToken = (user) => jwt.sign(
-  { id: user.id, role: user.role },
-  JWT_SECRET,
-  { expiresIn: '30d' }
-);
 
 const register = async (req, res) => {
   try {
-    const { username, email, password, displayName } = req.body;
-    if (!username || !email || !password) {
+    let { username, email, password, displayName, referralCode } = req.body;
+    if (!username || !email || !password)
       return res.status(400).json({ error: 'Username, email and password are required' });
-    }
 
-    const existing = await User.findOne({ where: { email: email.toLowerCase().trim() } });
-    if (existing) return res.status(400).json({ error: 'Email already registered' });
+    email = email.toLowerCase().trim();
+    username = username.toLowerCase().trim();
 
-    const existingUsername = await User.findOne({ where: { username: username.toLowerCase().trim() } });
-    if (existingUsername) return res.status(400).json({ error: 'Username taken' });
+    const existingEmail = await User.findOne({ where: { email } });
+    if (existingEmail) return res.status(400).json({ error: 'Email already registered' });
+
+    const existingUsername = await User.findOne({ where: { username } });
+    if (existingUsername) return res.status(400).json({ error: 'Username already taken' });
 
     const hashed = await bcrypt.hash(password, 10);
-    const referralCode = uuidv4().split('-')[0].toUpperCase();
-
     let referredBy = null;
-    if (req.body.referralCode) {
-      referredBy = await User.findOne({ where: { referralCode: req.body.referralCode } });
+    if (referralCode) {
+      const referrer = await User.findOne({ where: { referralCode } });
+      if (referrer) referredBy = referrer.id;
     }
 
     const user = await User.create({
-      username: username.toLowerCase().trim(),
-      email: email.toLowerCase().trim(),
-      password: hashed,
+      username, email, password: hashed,
       displayName: displayName || username,
-      referralCode,
+      referredBy,
     });
 
-    if (referredBy) {
-      const { Referral } = require('../models');
-      await Referral.create({
-        referrerId: referredBy.id, referredId: user.id,
-        code: req.body.referralCode, status: 'completed',
-        pointsAwarded: 50, completedAt: new Date(),
-      });
-      await referredBy.increment('referralPoints', { by: 50 });
-    }
-
-    const token = generateToken(user);
+    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'revilla2026', { expiresIn: '30d' });
     const safe = user.toJSON();
     delete safe.password;
-    res.status(201).json({ token, user: safe });
+    res.status(201).json({ token, user: safe, welcomeMessage: 'Revilla — The way you love it' });
   } catch (err) {
     console.error('Register error:', err);
     res.status(500).json({ error: 'Registration failed: ' + err.message });
@@ -61,46 +42,44 @@ const register = async (req, res) => {
 
 const login = async (req, res) => {
   try {
-    const { emailOrUsername, password } = req.body;
-    if (!emailOrUsername || !password) {
+    let { emailOrUsername, password } = req.body;
+    if (!emailOrUsername || !password)
       return res.status(400).json({ error: 'Email/username and password are required' });
-    }
 
-    const identifier = emailOrUsername.toLowerCase().trim();
+    emailOrUsername = emailOrUsername.toLowerCase().trim();
+
     const user = await User.findOne({
-      where: identifier.includes('@') ? { email: identifier } : { username: identifier }
+      where: emailOrUsername.includes('@') ? { email: emailOrUsername } : { username: emailOrUsername }
     });
 
     if (!user) return res.status(401).json({ error: 'No account found with that email or username' });
-    if (user.isBanned) return res.status(403).json({ error: 'Account suspended', reason: user.banReason });
+    if (user.isBanned) return res.status(403).json({ error: 'Your account has been suspended' });
 
     const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(401).json({ error: 'Wrong password — please try again' });
+    if (!valid) return res.status(401).json({ error: 'Incorrect password' });
 
     await user.update({ isOnline: true, lastSeen: new Date() });
-    const token = generateToken(user);
+    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'revilla2026', { expiresIn: '30d' });
     const safe = user.toJSON();
     delete safe.password;
-    res.json({ token, user: safe });
+    res.json({
+      token, user: safe,
+      welcomeMessage: `Welcome back, ${user.displayName || user.username}! Revilla — The way you love it`
+    });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Login failed: ' + err.message });
   }
 };
 
-const logout = async (req, res) => {
+const getMe = async (req, res) => {
   try {
-    await req.user.update({ isOnline: false, lastSeen: new Date() });
-    res.json({ message: 'Logged out' });
+    const safe = req.user.toJSON();
+    delete safe.password;
+    res.json(safe);
   } catch (err) {
-    res.status(500).json({ error: 'Logout failed' });
+    res.status(500).json({ error: 'Failed to get user' });
   }
 };
 
-const getMe = async (req, res) => {
-  const safe = req.user.toJSON();
-  delete safe.password;
-  res.json(safe);
-};
-
-module.exports = { register, login, logout, getMe };
+module.exports = { register, login, getMe };
