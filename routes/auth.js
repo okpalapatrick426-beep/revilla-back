@@ -1,12 +1,18 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { supabaseSync, getMe } = require('../controllers/authController');
+const { register, login, logout, getMe } = require('../controllers/authController');
 
-// Supabase magic link sync — called after successful Supabase auth
-router.post('/supabase-sync', supabaseSync);
+// Register
+router.post('/register', register);
 
-// Get current user (uses our JWT)
+// Login
+router.post('/login', login);
+
+// Logout
+router.post('/logout', auth, logout);
+
+// Get current user
 router.get('/me', auth, getMe);
 
 module.exports = router;
