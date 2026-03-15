@@ -1,144 +1,78 @@
 const express = require('express');
 const router = express.Router();
 const { auth } = require('../middleware/auth');
-const { uploadSmart } = require('../middleware/cloudinaryUpload');
-const { Message, User } = require('../models');
+const { Status, User } = require('../models');
 const { Op } = require('sequelize');
 
-router.get('/conversations', auth, async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const myId = req.user.id;
-    const messages = await Message.findAll({
-      where: {
-        [Op.or]: [{ senderId: myId }, { receiverId: myId }],
-        deletedForEveryone: false,
-        groupId: null,
-        receiverId: { [Op.ne]: null },
-      },
+    const statuses = await Status.findAll({
+      where: { expiresAt: { [Op.gt]: new Date() } },
+      include: [{ model: User, as: 'User', attributes: ['id', 'username', 'displayName', 'avatar'] }],
       order: [['createdAt', 'DESC']],
     });
+    res.json(statuses);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch statuses' });
+  }
+});
 
-    const seen = new Map();
-    for (const msg of messages) {
-      const otherId = msg.senderId === myId ? msg.receiverId : msg.senderId;
-      if (!otherId || seen.has(otherId)) continue;
-      seen.set(otherId, {
-        lastMessage: msg.deletedForEveryone ? 'Message deleted' : msg.content,
-        lastMessageTime: msg.createdAt,
-      });
+router.get('/mine', auth, async (req, res) => {
+  try {
+    const statuses = await Status.findAll({
+      where: { userId: req.user.id, expiresAt: { [Op.gt]: new Date() } },
+      order: [['createdAt', 'DESC']],
+    });
+    res.json(statuses);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch your statuses' });
+  }
+});
+
+router.post('/', auth, async (req, res) => {
+  try {
+    const { content, type, backgroundColor, mediaUrl } = req.body;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const status = await Status.create({
+      userId: req.user.id,
+      content: content || '',
+      type: type || 'text',
+      backgroundColor: backgroundColor || '#1a1a2e',
+      mediaUrl: mediaUrl || null,
+      expiresAt,
+      viewers: '[]',
+      viewCount: 0,
+    });
+    res.status(201).json(status);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create status' });
+  }
+});
+
+router.post('/:id/view', auth, async (req, res) => {
+  try {
+    const status = await Status.findByPk(req.params.id);
+    if (!status) return res.status(404).json({ error: 'Not found' });
+    const viewers = JSON.parse(status.viewers || '[]');
+    if (!viewers.includes(req.user.id)) {
+      viewers.push(req.user.id);
+      await status.update({ viewers: JSON.stringify(viewers), viewCount: viewers.length });
     }
-
-    if (seen.size === 0) return res.json([]);
-
-    const users = await User.findAll({
-      where: { id: { [Op.in]: Array.from(seen.keys()) } },
-      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen'],
-    });
-
-    const convos = users.map(u => ({
-      ...u.toJSON(),
-      lastMessage: seen.get(u.id)?.lastMessage,
-      lastMessageTime: seen.get(u.id)?.lastMessageTime,
-    })).sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
-
-    res.json(convos);
+    res.json({ success: true, viewCount: viewers.length });
   } catch (err) {
-    console.error('Conversations error:', err);
-    res.status(500).json({ error: 'Failed to load conversations' });
-  }
-});
-
-router.get('/:userId', auth, async (req, res) => {
-  try {
-    const myId = req.user.id;
-    const { userId } = req.params;
-    const messages = await Message.findAll({
-      where: {
-        deletedForEveryone: false,
-        [Op.or]: [
-          { senderId: myId, receiverId: userId },
-          { senderId: userId, receiverId: myId },
-        ],
-      },
-      order: [['createdAt', 'ASC']],
-    });
-    const filtered = messages.filter(m => {
-      try { return !JSON.parse(m.deletedFor || '[]').includes(myId); }
-      catch { return true; }
-    });
-    res.json(filtered);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch messages' });
-  }
-});
-
-router.post('/', auth, uploadSmart.single('media'), async (req, res) => {
-  try {
-    const { content, receiverId, groupId, type, replyToId, replyToContent } = req.body;
-    const mediaUrl = req.file?.path || req.file?.secure_url || null;
-    const isAudio = req.file?.mimetype?.startsWith('audio/') || false;
-    const msg = await Message.create({
-      senderId: req.user.id,
-      receiverId: receiverId || null,
-      groupId: groupId || null,
-      content: content || (mediaUrl ? (isAudio ? 'Voice message' : 'Image') : ''),
-      type: type || (mediaUrl ? (isAudio ? 'voice' : 'image') : 'text'),
-      mediaUrl,
-      replyToId: replyToId || null,
-      replyToContent: replyToContent || null,
-    });
-    res.status(201).json(msg);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to send message: ' + err.message });
+    res.status(500).json({ error: 'Failed to mark view' });
   }
 });
 
 router.delete('/:id', auth, async (req, res) => {
   try {
-    const { deleteFor } = req.body;
-    const myId = req.user.id;
-    const msg = await Message.findByPk(req.params.id);
-    if (!msg) return res.status(404).json({ error: 'Not found' });
-    if (deleteFor === 'everyone') {
-      if (msg.senderId !== myId) return res.status(403).json({ error: 'Not your message' });
-      await msg.update({ deletedForEveryone: true, content: 'This message was deleted' });
-      return res.json({ success: true, deletedForEveryone: true, id: msg.id });
-    } else {
-      const deletedFor = JSON.parse(msg.deletedFor || '[]');
-      if (!deletedFor.includes(myId)) deletedFor.push(myId);
-      await msg.update({ deletedFor: JSON.stringify(deletedFor) });
-      return res.json({ success: true, id: msg.id });
-    }
+    const status = await Status.findByPk(req.params.id);
+    if (!status) return res.status(404).json({ error: 'Not found' });
+    if (status.userId !== req.user.id) return res.status(403).json({ error: 'Not yours' });
+    await status.destroy();
+    res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: 'Delete failed' });
-  }
-});
-
-router.post('/:id/react', auth, async (req, res) => {
-  try {
-    const msg = await Message.findByPk(req.params.id);
-    if (!msg) return res.status(404).json({ error: 'Not found' });
-    const reactions = JSON.parse(msg.reactions || '{}');
-    const { emoji } = req.body;
-    if (!reactions[emoji]) reactions[emoji] = [];
-    const idx = reactions[emoji].indexOf(req.user.id);
-    if (idx > -1) reactions[emoji].splice(idx, 1);
-    else reactions[emoji].push(req.user.id);
-    await msg.update({ reactions: JSON.stringify(reactions) });
-    res.json(msg);
-  } catch (err) {
-    res.status(500).json({ error: 'React failed' });
-  }
-});
-
-router.post('/:id/pin', auth, async (req, res) => {
-  try {
-    const msg = await Message.findByPk(req.params.id);
-    if (!msg) return res.status(404).json({ error: 'Not found' });
-    await msg.update({ isPinned: !msg.isPinned });
-    res.json(msg);
-  } catch (err) {
-    res.status(500).json({ error: 'Pin failed' });
+    res.status(500).json({ error: 'Failed to delete' });
   }
 });
 
