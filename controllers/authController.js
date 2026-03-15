@@ -1,85 +1,80 @@
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { User } = require('../models');
+const crypto = require('crypto');
 
-const register = async (req, res) => {
+const JWT_SECRET = process.env.JWT_SECRET || 'revilla2026';
+
+// Called after Supabase magic link login — syncs user to our DB
+const supabaseSync = async (req, res) => {
   try {
-    let { username, email, password, displayName, referralCode } = req.body;
-    if (!username || !email || !password)
-      return res.status(400).json({ error: 'Username, email and password are required' });
+    const { supabaseId, email, displayName, referralCode } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email required' });
 
-    email = email.toLowerCase().trim();
-    username = username.toLowerCase().trim();
+    const cleanEmail = email.toLowerCase().trim();
 
-    const existingEmail = await User.findOne({ where: { email } });
-    if (existingEmail) return res.status(400).json({ error: 'Email already registered' });
+    // Find or create user in our DB
+    let user = await User.findOne({ where: { email: cleanEmail } });
 
-    const existingUsername = await User.findOne({ where: { username } });
-    if (existingUsername) return res.status(400).json({ error: 'Username already taken' });
+    if (!user) {
+      // New user — create account
+      const baseUsername = (displayName || cleanEmail.split('@')[0])
+        .toLowerCase().replace(/[^a-z0-9]/gi, '').substring(0, 15);
+      let username = baseUsername;
 
-    const hashed = await bcrypt.hash(password, 10);
-    let referredBy = null;
-    if (referralCode) {
-      const referrer = await User.findOne({ where: { referralCode } });
-      if (referrer) referredBy = referrer.id;
+      // Ensure unique username
+      let attempt = 0;
+      while (await User.findOne({ where: { username } })) {
+        attempt++;
+        username = `${baseUsername}${Math.floor(Math.random() * 9999)}`;
+        if (attempt > 10) break;
+      }
+
+      let referredBy = null;
+      if (referralCode) {
+        const referrer = await User.findOne({ where: { referralCode } });
+        if (referrer) referredBy = referrer.id;
+      }
+
+      user = await User.create({
+        email: cleanEmail,
+        username,
+        displayName: displayName || username,
+        password: crypto.randomBytes(32).toString('hex'), // never used
+        referredBy,
+        isVerified: true, // Supabase verified their email
+      });
+    } else {
+      // Existing user — update online status
+      await user.update({ isOnline: true, lastSeen: new Date(), isVerified: true });
     }
 
-    const user = await User.create({
-      username, email, password: hashed,
-      displayName: displayName || username,
-      referredBy,
-    });
-
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'revilla2026', { expiresIn: '30d' });
+    // Issue our own JWT for API calls
+    const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '30d' });
     const safe = user.toJSON();
     delete safe.password;
-    res.status(201).json({ token, user: safe, welcomeMessage: 'Revilla — The way you love it' });
-  } catch (err) {
-    console.error('Register error:', err);
-    res.status(500).json({ error: 'Registration failed: ' + err.message });
-  }
-};
 
-const login = async (req, res) => {
-  try {
-    let { emailOrUsername, password } = req.body;
-    if (!emailOrUsername || !password)
-      return res.status(400).json({ error: 'Email/username and password are required' });
-
-    emailOrUsername = emailOrUsername.toLowerCase().trim();
-
-    const user = await User.findOne({
-      where: emailOrUsername.includes('@') ? { email: emailOrUsername } : { username: emailOrUsername }
-    });
-
-    if (!user) return res.status(401).json({ error: 'No account found with that email or username' });
-    if (user.isBanned) return res.status(403).json({ error: 'Your account has been suspended' });
-
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(401).json({ error: 'Incorrect password' });
-
-    await user.update({ isOnline: true, lastSeen: new Date() });
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'revilla2026', { expiresIn: '30d' });
-    const safe = user.toJSON();
-    delete safe.password;
     res.json({
-      token, user: safe,
-      welcomeMessage: `Welcome back, ${user.displayName || user.username}! Revilla — The way you love it`
+      token,
+      user: safe,
+      welcomeMessage: user.createdAt === user.updatedAt
+        ? 'Welcome to Revilla — The way you love it! ✨'
+        : `Welcome back, ${user.displayName}! ✨`,
     });
   } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Login failed: ' + err.message });
+    console.error('Supabase sync error:', err);
+    res.status(500).json({ error: 'Sync failed: ' + err.message });
   }
 };
 
+// Get current user
 const getMe = async (req, res) => {
   try {
     const safe = req.user.toJSON();
     delete safe.password;
     res.json(safe);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to get user' });
+    res.status(500).json({ error: 'Failed' });
   }
 };
 
-module.exports = { register, login, getMe };
+module.exports = { supabaseSync, getMe };
