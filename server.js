@@ -13,7 +13,6 @@ const messageRoutes = require('./routes/messages');
 const statusRoutes = require('./routes/status');
 const productRoutes = require('./routes/products');
 const referralRoutes = require('./routes/referrals');
-const adminRoutes = require('./routes/admin');
 const friendRoutes = require('./routes/friends');
 
 const app = express();
@@ -36,12 +35,11 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/status', statusRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/referrals', referralRoutes);
-app.use('/api/admin', adminRoutes);
 app.use('/api/friends', friendRoutes);
 
-// Health check endpoint — used by UptimeRobot to keep server awake
-app.get('/api/health', (req, res) => res.json({ 
-  status: 'ok', 
+// Health check
+app.get('/api/health', (req, res) => res.json({
+  status: 'ok',
   time: new Date(),
   uptime: process.uptime()
 }));
