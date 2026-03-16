@@ -6,14 +6,7 @@ const cors = require('cors');
 const { sequelize } = require('./models');
 const { initSocketHandlers } = require('./socket/socketHandlers');
 
-// Routes
 const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/users');
-const messageRoutes = require('./routes/messages');
-const statusRoutes = require('./routes/status');
-const productRoutes = require('./routes/products');
-const referralRoutes = require('./routes/referrals');
-const friendRoutes = require('./routes/friends');
 
 const app = express();
 const server = http.createServer(app);
@@ -28,23 +21,10 @@ const io = new Server(server, {
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
 
-// Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/messages', messageRoutes);
-app.use('/api/status', statusRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/referrals', referralRoutes);
-app.use('/api/friends', friendRoutes);
 
-// Health check
-app.get('/api/health', (req, res) => res.json({
-  status: 'ok',
-  time: new Date(),
-  uptime: process.uptime()
-}));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
 
-// Socket.io
 initSocketHandlers(io);
 
 const PORT = process.env.PORT || 5000;
