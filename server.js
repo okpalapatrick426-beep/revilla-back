@@ -6,6 +6,7 @@ const cors = require('cors');
 const { sequelize } = require('./models');
 const { initSocketHandlers } = require('./socket/socketHandlers');
 
+// Routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const messageRoutes = require('./routes/messages');
@@ -28,6 +29,7 @@ const io = new Server(server, {
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
 
+// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/messages', messageRoutes);
@@ -37,8 +39,14 @@ app.use('/api/referrals', referralRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/friends', friendRoutes);
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date() }));
+// Health check endpoint — used by UptimeRobot to keep server awake
+app.get('/api/health', (req, res) => res.json({ 
+  status: 'ok', 
+  time: new Date(),
+  uptime: process.uptime()
+}));
 
+// Socket.io
 initSocketHandlers(io);
 
 const PORT = process.env.PORT || 5000;
