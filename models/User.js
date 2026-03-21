@@ -1,5 +1,4 @@
 const { DataTypes } = require('sequelize');
-
 module.exports = (sequelize) => sequelize.define('User', {
   id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
   username: { type: DataTypes.STRING, unique: true, allowNull: false },
@@ -17,20 +16,9 @@ module.exports = (sequelize) => sequelize.define('User', {
   locationUpdatedAt: { type: DataTypes.DATE, defaultValue: null },
   showOnlineStatus: { type: DataTypes.BOOLEAN, defaultValue: true },
   readReceipts: { type: DataTypes.BOOLEAN, defaultValue: true },
-  notificationsEnabled: { type: DataTypes.BOOLEAN, defaultValue: true },
-  isBanned: { type: DataTypes.BOOLEAN, defaultValue: false },
-  isVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
   referralCode: { type: DataTypes.STRING, unique: true },
-  referredBy: { type: DataTypes.UUID, defaultValue: null },
-  followersCount: { type: DataTypes.INTEGER, defaultValue: 0 },
-  followingCount: { type: DataTypes.INTEGER, defaultValue: 0 },
-}, {
-  timestamps: true,
-  hooks: {
-    beforeCreate: (user) => {
-      if (!user.referralCode) {
-        user.referralCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-      }
-    }
-  }
+  referralPoints: { type: DataTypes.INTEGER, defaultValue: 0 },
+  isBanned: { type: DataTypes.BOOLEAN, defaultValue: false },
+  banReason: { type: DataTypes.STRING, defaultValue: null },
+  notificationsEnabled: { type: DataTypes.BOOLEAN, defaultValue: true },
 });
