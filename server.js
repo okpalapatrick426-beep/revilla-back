@@ -18,6 +18,7 @@ const friendRoutes = require('./routes/friends');
 
 const app = express();
 const server = http.createServer(app);
+
 const allowedOrigins = process.env.CLIENT_URL
   ? process.env.CLIENT_URL.split(',')
   : ['http://localhost:3000', 'http://localhost:3001'];
@@ -29,6 +30,12 @@ const io = new Server(server, {
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
 
+// Attach io to every request so controllers can emit events
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -39,21 +46,28 @@ app.use('/api/referrals', referralRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/friends', friendRoutes);
 
-// Health check endpoint — used by UptimeRobot to keep server awake
-app.get('/api/health', (req, res) => res.json({ 
-  status: 'ok', 
+// Health check — used by UptimeRobot to keep server awake
+app.get('/api/health', (req, res) => res.json({
+  status: 'ok',
   time: new Date(),
-  uptime: process.uptime()
+  uptime: process.uptime(),
 }));
-
-// Socket.io
-initSocketHandlers(io);
 
 const PORT = process.env.PORT || 5000;
 
-sequelize.sync({ alter: true }).then(() => {
-  console.log('✅ Database synced');
-  server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-}).catch(err => console.error('❌ DB sync error:', err));
+// Sync DB first, THEN start socket handlers and server
+sequelize.sync({ alter: true })
+  .then(() => {
+    console.log('✅ Database synced');
+
+    // Init socket AFTER DB is ready
+    initSocketHandlers(io);
+
+    server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+  })
+  .catch(err => {
+    console.error('❌ DB sync error:', err);
+    process.exit(1); // Force Render to show the real error instead of looping
+  });
 
 module.exports = { app, io };
