@@ -1,4 +1,4 @@
-const { User, Friend } = require('../models');
+const { User } = require('../models');
 const { Op } = require('sequelize');
 
 const getProfile = async (req, res) => {
@@ -9,6 +9,7 @@ const getProfile = async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
   } catch (err) {
+    console.error('getProfile error:', err);
     res.status(500).json({ error: 'Failed to fetch profile' });
   }
 };
@@ -23,6 +24,7 @@ const updateProfile = async (req, res) => {
     delete safe.password;
     res.json(safe);
   } catch (err) {
+    console.error('updateProfile error:', err);
     res.status(500).json({ error: 'Failed to update profile' });
   }
 };
@@ -50,6 +52,7 @@ const updateLocationSharing = async (req, res) => {
       message: enabled ? 'Location sharing enabled' : 'Location sharing disabled and data cleared'
     });
   } catch (err) {
+    console.error('updateLocationSharing error:', err);
     res.status(500).json({ error: 'Failed to update location settings' });
   }
 };
@@ -72,6 +75,7 @@ const searchUsers = async (req, res) => {
     });
     res.json(users);
   } catch (err) {
+    console.error('searchUsers error:', err);
     res.status(500).json({ error: 'Search failed' });
   }
 };
@@ -85,6 +89,7 @@ const getAllUsers = async (req, res) => {
     });
     res.json(users);
   } catch (err) {
+    console.error('getAllUsers error:', err);
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 };
