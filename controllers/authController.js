@@ -37,15 +37,20 @@ const register = async (req, res) => {
     });
 
     if (req.body.referralCode) {
-      const referredBy = await User.findOne({ where: { referralCode: req.body.referralCode } });
-      if (referredBy) {
+      try {
         const { Referral } = require('../models');
-        await Referral.create({
-          referrerId: referredBy.id, referredId: user.id,
-          code: req.body.referralCode, status: 'completed',
-          pointsAwarded: 50, completedAt: new Date(),
-        });
-        await referredBy.increment('referralPoints', { by: 50 });
+        const referredBy = await User.findOne({ where: { referralCode: req.body.referralCode } });
+        if (referredBy) {
+          await Referral.create({
+            referrerId: referredBy.id, referredId: user.id,
+            code: req.body.referralCode, status: 'completed',
+            pointsAwarded: 50, completedAt: new Date(),
+          });
+          await referredBy.increment('referralPoints', { by: 50 });
+        }
+      } catch (refErr) {
+        // Referral model may not exist yet — non-fatal
+        console.warn('Referral tracking skipped:', refErr.message);
       }
     }
 
@@ -87,6 +92,40 @@ const login = async (req, res) => {
   }
 };
 
+// Passwordless easy-login (dev/demo flow)
+const easyLogin = async (req, res) => {
+  try {
+    const { username } = req.body;
+    if (!username) return res.status(400).json({ error: 'Username required' });
+
+    const usernameClean = username.toLowerCase().trim();
+    let user = await User.findOne({ where: { username: usernameClean } });
+
+    if (!user) {
+      // Auto-create account for easy-login
+      const referralCode = uuidv4().split('-')[0].toUpperCase();
+      user = await User.create({
+        username: usernameClean,
+        email: `${usernameClean}@easy.revilla`,
+        password: await bcrypt.hash(uuidv4(), 10), // random password — never used
+        displayName: username,
+        referralCode,
+      });
+    }
+
+    if (user.isBanned) return res.status(403).json({ error: 'Account suspended' });
+
+    await user.update({ isOnline: true, lastSeen: new Date() });
+    const token = generateToken(user);
+    const safe = user.toJSON();
+    delete safe.password;
+    res.json({ token, user: safe });
+  } catch (err) {
+    console.error('Easy-login error:', err);
+    res.status(500).json({ error: 'Easy login failed: ' + err.message });
+  }
+};
+
 const logout = async (req, res) => {
   try {
     await req.user.update({ isOnline: false, lastSeen: new Date() });
@@ -102,4 +141,4 @@ const getMe = async (req, res) => {
   res.json(safe);
 };
 
-module.exports = { register, login, logout, getMe };
+module.exports = { register, login, easyLogin, logout, getMe };
