@@ -15,22 +15,15 @@ const getProfile = async (req, res) => {
 
 const updateProfile = async (req, res) => {
   try {
-    const allowed = ['displayName', 'bio', 'showOnlineStatus', 'readReceipts', 'notificationsEnabled'];
+    const allowed = ['displayName', 'bio', 'avatar', 'showOnlineStatus', 'readReceipts', 'notificationsEnabled'];
     const updates = {};
     allowed.forEach(key => { if (req.body[key] !== undefined) updates[key] = req.body[key]; });
-
-    // Cloudinary gives secure_url directly
-    if (req.file) {
-      updates.avatar = req.file.path || req.file.secure_url;
-    }
-
     await req.user.update(updates);
     const safe = req.user.toJSON();
     delete safe.password;
     res.json(safe);
   } catch (err) {
-    console.error('Profile update error:', err);
-    res.status(500).json({ error: 'Failed to update profile: ' + err.message });
+    res.status(500).json({ error: 'Failed to update profile' });
   }
 };
 
@@ -38,7 +31,7 @@ const updateLocationSharing = async (req, res) => {
   try {
     const { enabled, lat, lng } = req.body;
     if (enabled && (lat === undefined || lng === undefined)) {
-      return res.status(400).json({ error: 'Location coordinates required' });
+      return res.status(400).json({ error: 'Location coordinates required when enabling location sharing' });
     }
     const updates = { locationSharingEnabled: !!enabled };
     if (enabled) {
@@ -48,11 +41,16 @@ const updateLocationSharing = async (req, res) => {
     } else {
       updates.locationLat = null;
       updates.locationLng = null;
+      updates.locationUpdatedAt = null;
     }
     await req.user.update(updates);
-    res.json({ success: true });
+    res.json({
+      success: true,
+      locationSharingEnabled: !!enabled,
+      message: enabled ? 'Location sharing enabled' : 'Location sharing disabled and data cleared'
+    });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to update location' });
+    res.status(500).json({ error: 'Failed to update location settings' });
   }
 };
 
@@ -63,8 +61,8 @@ const searchUsers = async (req, res) => {
     const users = await User.findAll({
       where: {
         [Op.or]: [
-          { username: { [Op.iLike]: `%${q}%` } },
-          { displayName: { [Op.iLike]: `%${q}%` } },
+          { username: { [Op.like]: `%${q}%` } },
+          { displayName: { [Op.like]: `%${q}%` } },
         ],
         id: { [Op.ne]: req.user.id },
         isBanned: false,
