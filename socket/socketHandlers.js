@@ -1,53 +1,77 @@
 const { User } = require('../models');
 
-// Track active socket connections
 const onlineUsers = new Map(); // userId -> { socketId, lastSeen, inApp }
 
-// IMPORTANT: exported as a named function to match:
-// const { initSocketHandlers } = require('./socket/socketHandlers');
 const initSocketHandlers = (io) => {
   io.on('connection', (socket) => {
     const userId = socket.handshake.auth?.userId;
     if (!userId) return;
 
-    // Mark user as online
+    // Mark online + in app
     onlineUsers.set(userId, { socketId: socket.id, lastSeen: Date.now(), inApp: true });
     User.update({ isOnline: true, lastSeen: new Date() }, { where: { id: userId } }).catch(() => {});
 
-    // Broadcast to everyone that this user is now online
+    // Broadcast to everyone
     io.emit('userOnline', { userId, inApp: true });
 
-    // Send current online users list to newly connected user
+    // Send current online list to new user
     const onlineList = Array.from(onlineUsers.entries()).map(([uid, data]) => ({
-      userId: uid,
-      inApp: data.inApp,
-      lastSeen: data.lastSeen,
+      userId: uid, inApp: data.inApp, lastSeen: data.lastSeen,
     }));
     socket.emit('onlineUsers', onlineList);
 
-    // Join personal room
+    // Join personal room (for DMs directed at this user)
     socket.join(userId);
 
-    // ─── MESSAGING ───────────────────────────────────────────
+    // ── ROOM MANAGEMENT ───────────────────────────────────────────────────
+    // Frontend calls joinRoom('dm:user1-user2') when opening a chat
+    socket.on('joinRoom', (room) => {
+      socket.join(room);
+    });
+
+    socket.on('leaveRoom', (room) => {
+      socket.leave(room);
+    });
+
+    // ── MESSAGING ─────────────────────────────────────────────────────────
     socket.on('sendMessage', (msg) => {
-      const targetId = msg.receiverId || msg.groupId;
-      if (targetId) io.to(targetId).emit('newMessage', msg);
+      // Broadcast to the DM room so the other person gets it instantly
+      const recipientId = msg.recipientId || msg.receiverId || msg.to;
+      if (recipientId) {
+        // Emit to recipient's personal room
+        socket.to(recipientId).emit('newMessage', msg);
+        // Also emit to the shared DM room (both sides joined)
+        const roomId = [userId, recipientId].sort().join('-');
+        socket.to(`dm:${roomId}`).emit('newMessage', msg);
+      }
+      if (msg.groupId) {
+        socket.to(`group:${msg.groupId}`).emit('newMessage', msg);
+      }
     });
 
     socket.on('messageDeleted', ({ id, deletedForEveryone, to }) => {
-      if (to) io.to(to).emit('messageDeleted', { id, deletedForEveryone });
+      if (to) {
+        socket.to(to).emit('messageDeleted', { id, deletedForEveryone });
+        const roomId = [userId, to].sort().join('-');
+        socket.to(`dm:${roomId}`).emit('messageDeleted', { id, deletedForEveryone });
+      }
     });
 
-    // ─── TYPING ───────────────────────────────────────────────
+    // ── TYPING ────────────────────────────────────────────────────────────
     socket.on('typing', ({ to, text }) => {
+      // Send to recipient's personal room + DM room
       socket.to(to).emit('typing', { userId, text: text || '' });
+      const roomId = [userId, to].sort().join('-');
+      socket.to(`dm:${roomId}`).emit('typing', { userId, text: text || '' });
     });
 
     socket.on('stopTyping', ({ to }) => {
       socket.to(to).emit('stopTyping', { userId });
+      const roomId = [userId, to].sort().join('-');
+      socket.to(`dm:${roomId}`).emit('stopTyping', { userId });
     });
 
-    // ─── LOCATION SHARING (opt-in) ────────────────────────────
+    // ── LOCATION ──────────────────────────────────────────────────────────
     socket.on('shareLocation', ({ to, lat, lng, address }) => {
       io.to(to).emit('locationShared', { userId, lat, lng, address, timestamp: Date.now() });
       User.update(
@@ -64,12 +88,12 @@ const initSocketHandlers = (io) => {
       ).catch(() => {});
     });
 
-    // ─── READ RECEIPTS ────────────────────────────────────────
+    // ── READ RECEIPTS ─────────────────────────────────────────────────────
     socket.on('markRead', ({ to, messageIds }) => {
       socket.to(to).emit('messagesRead', { messageIds, readBy: userId });
     });
 
-    // ─── HEARTBEAT ────────────────────────────────────────────
+    // ── HEARTBEAT ─────────────────────────────────────────────────────────
     socket.on('heartbeat', () => {
       if (onlineUsers.has(userId)) {
         onlineUsers.get(userId).lastSeen = Date.now();
@@ -77,7 +101,7 @@ const initSocketHandlers = (io) => {
       }
     });
 
-    // ─── DISCONNECT ───────────────────────────────────────────
+    // ── DISCONNECT ────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
       onlineUsers.delete(userId);
       User.update({ isOnline: false, lastSeen: new Date() }, { where: { id: userId } }).catch(() => {});
