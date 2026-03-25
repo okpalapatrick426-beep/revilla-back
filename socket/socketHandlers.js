@@ -1,113 +1,133 @@
 const { User } = require('../models');
 
-const onlineUsers = new Map(); // userId -> { socketId, lastSeen, inApp }
+// Track active socket connections: userId -> { socketId, lastSeen, inApp }
+const onlineUsers = new Map();
 
-const initSocketHandlers = (io) => {
+module.exports = { initSocketHandlers };
+
+function initSocketHandlers(io) {
   io.on('connection', (socket) => {
     const userId = socket.handshake.auth?.userId;
     if (!userId) return;
 
-    // Mark online + in app
-    onlineUsers.set(userId, { socketId: socket.id, lastSeen: Date.now(), inApp: true });
-    User.update({ isOnline: true, lastSeen: new Date() }, { where: { id: userId } }).catch(() => {});
+    // ─── PRESENCE ────────────────────────────────────────────────────────────
+    onlineUsers.set(String(userId), {
+      socketId: socket.id,
+      lastSeen: Date.now(),
+      inApp: true
+    });
 
-    // Broadcast to everyone
+    User.update(
+      { isOnline: true, lastSeen: new Date() },
+      { where: { id: userId } }
+    ).catch(() => {});
+
+    // Join personal room (for targeted events like messagesRead, calls)
+    socket.join(String(userId));
+
+    // Broadcast this user's online status
     io.emit('userOnline', { userId, inApp: true });
 
-    // Send current online list to new user
+    // Send current online list to newly connected user
     const onlineList = Array.from(onlineUsers.entries()).map(([uid, data]) => ({
-      userId: uid, inApp: data.inApp, lastSeen: data.lastSeen,
+      userId: uid,
+      inApp: data.inApp,
+      lastSeen: data.lastSeen,
     }));
     socket.emit('onlineUsers', onlineList);
 
-    // Join personal room (for DMs directed at this user)
-    socket.join(userId);
-
-    // ── ROOM MANAGEMENT ───────────────────────────────────────────────────
-    // Frontend calls joinRoom('dm:user1-user2') when opening a chat
-    socket.on('joinRoom', (room) => {
-      socket.join(room);
+    // ─── DM ROOM MANAGEMENT ──────────────────────────────────────────────────
+    // Frontend calls joinRoom('dm:userId1-userId2') when opening a chat
+    socket.on('joinRoom', (roomId) => {
+      socket.join(roomId);
     });
 
-    socket.on('leaveRoom', (room) => {
-      socket.leave(room);
+    socket.on('leaveRoom', (roomId) => {
+      socket.leave(roomId);
     });
 
-    // ── MESSAGING ─────────────────────────────────────────────────────────
+    // ─── MESSAGING ───────────────────────────────────────────────────────────
+    // The backend REST endpoint (messageController) is the source of truth for
+    // message creation and emitting 'newMessage'. This socket handler is a
+    // fallback for direct socket sends (e.g. from another device).
     socket.on('sendMessage', (msg) => {
-      // Broadcast to the DM room so the other person gets it instantly
-      const recipientId = msg.recipientId || msg.receiverId || msg.to;
+      if (!msg) return;
+      // Route to DM room or group room
+      const room = msg.groupId
+        ? `group:${msg.groupId}`
+        : `dm:${[String(userId), String(msg.receiverId || msg.recipientId)].sort().join('-')}`;
+      socket.to(room).emit('newMessage', msg);
+
+      // Also emit to recipient's personal room as fallback
+      const recipientId = msg.receiverId || msg.recipientId;
       if (recipientId) {
-        // Emit to recipient's personal room
-        socket.to(recipientId).emit('newMessage', msg);
-        // Also emit to the shared DM room (both sides joined)
-        const roomId = [userId, recipientId].sort().join('-');
-        socket.to(`dm:${roomId}`).emit('newMessage', msg);
-      }
-      if (msg.groupId) {
-        socket.to(`group:${msg.groupId}`).emit('newMessage', msg);
+        socket.to(String(recipientId)).emit('newMessage', msg);
       }
     });
 
     socket.on('messageDeleted', ({ id, deletedForEveryone, to }) => {
-      if (to) {
-        socket.to(to).emit('messageDeleted', { id, deletedForEveryone });
-        const roomId = [userId, to].sort().join('-');
-        socket.to(`dm:${roomId}`).emit('messageDeleted', { id, deletedForEveryone });
-      }
+      if (to) io.to(to).emit('messageDeleted', { id, deletedForEveryone });
     });
 
-    // ── TYPING ────────────────────────────────────────────────────────────
+    // ─── READ RECEIPTS ────────────────────────────────────────────────────────
+    // Frontend emits this when user opens a conversation
+    socket.on('markRead', ({ to, messageIds }) => {
+      // 'to' is the senderId of the messages being read
+      io.to(String(to)).emit('messagesRead', {
+        messageIds,
+        readBy: userId,
+        conversationWith: userId,
+      });
+    });
+
+    // ─── TYPING ──────────────────────────────────────────────────────────────
     socket.on('typing', ({ to, text }) => {
-      // Send to recipient's personal room + DM room
-      socket.to(to).emit('typing', { userId, text: text || '' });
-      const roomId = [userId, to].sort().join('-');
-      socket.to(`dm:${roomId}`).emit('typing', { userId, text: text || '' });
+      // 'to' is the other user's ID
+      socket.to(String(to)).emit('typing', { userId, text: text || '' });
     });
 
     socket.on('stopTyping', ({ to }) => {
-      socket.to(to).emit('stopTyping', { userId });
-      const roomId = [userId, to].sort().join('-');
-      socket.to(`dm:${roomId}`).emit('stopTyping', { userId });
+      socket.to(String(to)).emit('stopTyping', { userId });
     });
 
-    // ── LOCATION ──────────────────────────────────────────────────────────
-    socket.on('shareLocation', ({ to, lat, lng, address }) => {
-      io.to(to).emit('locationShared', { userId, lat, lng, address, timestamp: Date.now() });
-      User.update(
-        { locationLat: lat, locationLng: lng, locationUpdatedAt: new Date(), locationSharingEnabled: true },
-        { where: { id: userId } }
-      ).catch(() => {});
+    // ─── WEBRTC VOICE/VIDEO CALLS ─────────────────────────────────────────────
+    socket.on('callUser', ({ to, signal, isVideo }) => {
+      io.to(String(to)).emit('incomingCall', {
+        from: userId,
+        signal,
+        isVideo: !!isVideo,
+      });
     });
 
-    socket.on('stopSharingLocation', ({ to }) => {
-      io.to(to).emit('locationStopped', { userId });
-      User.update(
-        { locationSharingEnabled: false, locationLat: null, locationLng: null },
-        { where: { id: userId } }
-      ).catch(() => {});
+    socket.on('acceptCall', ({ to, signal }) => {
+      io.to(String(to)).emit('callAccepted', { signal });
     });
 
-    // ── READ RECEIPTS ─────────────────────────────────────────────────────
-    socket.on('markRead', ({ to, messageIds }) => {
-      socket.to(to).emit('messagesRead', { messageIds, readBy: userId });
+    socket.on('rejectCall', ({ to }) => {
+      io.to(String(to)).emit('callRejected', { by: userId });
     });
 
-    // ── HEARTBEAT ─────────────────────────────────────────────────────────
+    socket.on('endCall', ({ to }) => {
+      io.to(String(to)).emit('callEnded', { by: userId });
+    });
+
+    // ─── HEARTBEAT ────────────────────────────────────────────────────────────
     socket.on('heartbeat', () => {
-      if (onlineUsers.has(userId)) {
-        onlineUsers.get(userId).lastSeen = Date.now();
-        onlineUsers.get(userId).inApp = true;
+      const u = onlineUsers.get(String(userId));
+      if (u) {
+        u.lastSeen = Date.now();
+        u.inApp = true;
       }
     });
 
-    // ── DISCONNECT ────────────────────────────────────────────────────────
+    // ─── DISCONNECT ───────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
-      onlineUsers.delete(userId);
-      User.update({ isOnline: false, lastSeen: new Date() }, { where: { id: userId } }).catch(() => {});
+      onlineUsers.delete(String(userId));
+      User.update(
+        { isOnline: false, lastSeen: new Date() },
+        { where: { id: userId } }
+      ).catch(() => {});
       io.emit('userOffline', { userId, lastSeen: Date.now() });
     });
   });
-};
-
-module.exports = { initSocketHandlers };
+}
