@@ -1,51 +1,36 @@
-// routes/messages.js
 const express = require('express');
-const r = express.Router();
-const c = require('../controllers/messageController');
-const { auth } = require('../middleware/auth');
+const router = express.Router();
+const multer = require('multer');
+const { authenticate } = require('../middleware/auth');
+const {
+  getConversation,
+  getGroupMessages,
+  sendMessage,
+  markMessagesRead,
+  getConversations,
+  deleteMessage,
+  reactToMessage,
+} = require('../controllers/messageController');
 
-// Multer for image/voice uploads
-let upload;
-try {
-  const multer = require('multer');
-  const path   = require('path');
-  const fs     = require('fs');
+// Memory storage — pipes buffer to Cloudinary
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/', 'video/', 'audio/'];
+    if (allowed.some(type => file.mimetype.startsWith(type))) cb(null, true);
+    else cb(new Error('File type not allowed'), false);
+  }
+});
 
-  const uploadDir = path.join(__dirname, '../uploads');
-  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+router.use(authenticate);
 
-  const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename:    (req, file, cb) => {
-      const ext = path.extname(file.originalname);
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-    },
-  });
+router.get('/conversations', getConversations);
+router.get('/:userId', getConversation);
+router.get('/group/:groupId', getGroupMessages);
+router.post('/', upload.single('media'), sendMessage);
+router.patch('/read/:senderId', markMessagesRead);
+router.delete('/:id', deleteMessage);
+router.post('/:id/react', reactToMessage);
 
-  upload = multer({
-    storage,
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
-    fileFilter: (req, file, cb) => {
-      const allowed = /image|video|audio/;
-      cb(null, allowed.test(file.mimetype));
-    },
-  });
-} catch (e) {
-  // multer not installed — use no-op middleware
-  upload = { single: () => (req, res, next) => next() };
-  console.warn('multer not available — file uploads disabled');
-}
-
-// ── ROUTES ────────────────────────────────────────────────────────────────────
-// Conversations list — MUST come before /:id style routes
-r.get('/conversations',        auth, c.getConversations);
-r.get('/conversation/:userId', auth, c.getConversation);
-r.get('/group/:groupId',       auth, c.getGroupMessages);
-
-// Send message — supports JSON body OR multipart/form-data (with file)
-r.post('/', auth, upload.single('media'), c.sendMessage);
-
-r.delete('/:id',       auth, c.deleteMessage);
-r.post('/:id/react',   auth, c.reactToMessage);
-
-module.exports = r;
+module.exports = router;
