@@ -1,36 +1,46 @@
+// routes/messages.js
 const express = require('express');
-const router = express.Router();
+const r = express.Router();
 const multer = require('multer');
-const { authenticate } = require('../middleware/auth');
-const {
-  getConversation,
-  getGroupMessages,
-  sendMessage,
-  markMessagesRead,
-  getConversations,
-  deleteMessage,
-  reactToMessage,
-} = require('../controllers/messageController');
+const path = require('path');
+const fs = require('fs');
+const c = require('../controllers/messageController');
+const { auth } = require('../middleware/auth');
 
-// Memory storage — pipes buffer to Cloudinary
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
-  fileFilter: (req, file, cb) => {
-    const allowed = ['image/', 'video/', 'audio/'];
-    if (allowed.some(type => file.mimetype.startsWith(type))) cb(null, true);
-    else cb(new Error('File type not allowed'), false);
-  }
+// ─── Multer storage for media uploads ─────────────────────────────────────────
+const uploadDir = path.join(__dirname, '../uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || (file.mimetype.includes('webm') ? '.webm' : file.mimetype.includes('ogg') ? '.ogg' : file.mimetype.includes('mp4') ? '.mp4' : '.bin');
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  },
 });
 
-router.use(authenticate);
+const fileFilter = (req, file, cb) => {
+  const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'video/webm', 'video/mp4'];
+  if (allowed.includes(file.mimetype)) cb(null, true);
+  else cb(new Error('File type not allowed'), false);
+};
 
-router.get('/conversations', getConversations);
-router.get('/:userId', getConversation);
-router.get('/group/:groupId', getGroupMessages);
-router.post('/', upload.single('media'), sendMessage);
-router.patch('/read/:senderId', markMessagesRead);
-router.delete('/:id', deleteMessage);
-router.post('/:id/react', reactToMessage);
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
+});
 
-module.exports = router;
+// Serve uploaded files statically — add this line in server.js too:
+// app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
+r.get('/conversations', auth, c.getConversations);
+r.get('/:userId', auth, c.getConversation);
+r.get('/group/:groupId', auth, c.getGroupMessages);
+r.post('/', auth, upload.single('media'), c.sendMessage);
+r.delete('/:id', auth, c.deleteMessage);
+r.post('/:id/react', auth, c.reactToMessage);
+r.post('/mark-read', auth, c.markRead);
+
+module.exports = r;
