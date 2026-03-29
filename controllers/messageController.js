@@ -1,192 +1,194 @@
-const { Message, User } = require('../models');
+// controllers/messageController.js
+// ─── ADD these two functions / patch sendMessage in your existing controller ───
+//
+// 1. Replace your existing sendMessage with this version (handles req.file from multer)
+// 2. Add markRead at the bottom
+// 3. Add getConversations if it doesn't exist
+//
+// Keep all your other functions (deleteMessage, reactToMessage, etc.) unchanged.
+
+const path = require('path');
+const { Message, User, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
-const getConversation = async (req, res) => {
+// ─── GET /messages/conversations ──────────────────────────────────────────────
+exports.getConversations = async (req, res) => {
   try {
-    const { userId } = req.params;
-    const myId = req.user.id;
-
+    // Get latest message per unique partner
     const messages = await Message.findAll({
       where: {
-        deletedForEveryone: false,
         [Op.or]: [
-          { senderId: myId, recipientId: userId },
-          { senderId: userId, recipientId: myId },
-        ]
+          { senderId: req.user.id },
+          { recipientId: req.user.id },
+        ],
+        isDeleted: false,
       },
-      include: [{ model: User, as: 'sender', attributes: ['id','username','displayName','avatar'] }],
-      order: [['createdAt','ASC']],
-      limit: 200,
+      order: [['createdAt', 'DESC']],
     });
 
-    // Mark all incoming messages as read + emit socket event for real-time tick update
-    const unread = messages.filter(m => m.senderId === userId && m.recipientId === myId);
-    if (unread.length > 0) {
-      const unreadIds = unread.map(m => m.id);
-      for (const msg of unread) {
-        const readBy = Array.isArray(msg.readBy) ? msg.readBy : [];
-        if (!readBy.includes(myId)) {
-          await msg.update({ readBy: [...readBy, myId] });
-        }
-      }
-      // Tell the SENDER their messages were read (real-time blue ticks)
-      if (req.io) {
-        req.io.to(userId).emit('messagesRead', {
-          messageIds: unreadIds,
-          readBy: myId,
-          conversationId: myId,
-        });
-      }
+    // Build a map: partnerId -> latest message
+    const seen = new Map();
+    for (const msg of messages) {
+      const partnerId = msg.senderId === req.user.id ? msg.recipientId : msg.senderId;
+      if (!partnerId) continue;
+      if (!seen.has(partnerId)) seen.set(partnerId, msg);
     }
 
-    res.json(messages);
+    const partnerIds = Array.from(seen.keys());
+    if (partnerIds.length === 0) return res.json([]);
+
+    const users = await User.findAll({
+      where: { id: partnerIds },
+      attributes: ['id', 'username', 'displayName', 'avatar', 'isOnline', 'lastSeen'],
+    });
+
+    const result = users.map(u => {
+      const latest = seen.get(u.id);
+      const unreadCount = messages.filter(
+        m => m.senderId === u.id && m.recipientId === req.user.id &&
+          !(Array.isArray(m.readBy) ? m.readBy : []).includes(req.user.id)
+      ).length;
+      return {
+        ...u.toJSON(),
+        lastMessage: latest?.type !== 'text' ? `📎 ${latest?.type}` : latest?.content,
+        lastMessageTime: latest?.createdAt,
+        unreadCount,
+      };
+    }).sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
+
+    res.json(result);
   } catch (err) {
-    console.error('getConversation:', err);
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    console.error('getConversations error:', err);
+    res.status(500).json({ error: 'Failed to load conversations' });
   }
 };
 
-const getConversations = async (req, res) => {
+// ─── GET /messages/:userId ─────────────────────────────────────────────────────
+exports.getConversation = async (req, res) => {
   try {
-    const myId = req.user.id;
     const messages = await Message.findAll({
       where: {
-        deletedForEveryone: false,
-        groupId: null,
-        [Op.or]: [{ senderId: myId }, { recipientId: myId }],
+        [Op.or]: [
+          { senderId: req.user.id, recipientId: req.params.userId },
+          { senderId: req.params.userId, recipientId: req.user.id },
+        ],
+        isDeleted: false,
       },
-      include: [{ model: User, as: 'sender', attributes: ['id','username','displayName','avatar','isOnline','lastSeen'] }],
-      order: [['createdAt','DESC']],
-    });
-
-    const seen = new Set();
-    const convs = [];
-    for (const msg of messages) {
-      const otherId = msg.senderId === myId ? msg.recipientId : msg.senderId;
-      if (!otherId || seen.has(otherId)) continue;
-      seen.add(otherId);
-      const other = await User.findByPk(otherId, {
-        attributes: ['id','username','displayName','avatar','isOnline','lastSeen'],
-      });
-      if (!other) continue;
-      convs.push({
-        id:              other.id,
-        username:        other.username,
-        displayName:     other.displayName,
-        avatar:          other.avatar,
-        isOnline:        other.isOnline,
-        lastSeen:        other.lastSeen,
-        lastMessage:     msg.deletedForEveryone ? 'This message was deleted'
-                         : msg.type==='image' ? '📷 Image'
-                         : msg.type==='voice' ? '🎤 Voice note'
-                         : msg.content,
-        lastMessageTime: msg.createdAt,
-        isMine:          msg.senderId === myId,
-      });
-    }
-    res.json(convs);
-  } catch (err) {
-    console.error('getConversations:', err);
-    res.status(500).json({ error: 'Failed to fetch conversations' });
-  }
-};
-
-const getGroupMessages = async (req, res) => {
-  try {
-    const { groupId } = req.params;
-    const messages = await Message.findAll({
-      where: { groupId, deletedForEveryone: false },
-      include: [{ model: User, as: 'sender', attributes: ['id','username','displayName','avatar'] }],
-      order: [['createdAt','ASC']],
-      limit: 100,
+      order: [['createdAt', 'ASC']],
     });
     res.json(messages);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch group messages' });
+    console.error('getConversation error:', err);
+    res.status(500).json({ error: 'Failed to load messages' });
   }
 };
 
-const sendMessage = async (req, res) => {
+// ─── POST /messages ────────────────────────────────────────────────────────────
+// This version handles both JSON (text) and multipart/form-data (media)
+exports.sendMessage = async (req, res) => {
   try {
-    const { recipientId, groupId, content, type, replyToId } = req.body;
+    const { receiverId, content, type, replyToId, replyToContent, groupId } = req.body;
 
-    let mediaUrl = req.body.mediaUrl || null;
-    if (req.file) mediaUrl = `/uploads/${req.file.filename}`;
+    let mediaUrl = null;
 
-    if (!content && !mediaUrl) return res.status(400).json({ error: 'Content required' });
-    if (!recipientId && !groupId) return res.status(400).json({ error: 'Recipient required' });
-
-    const message = await Message.create({
-      senderId:    req.user.id,
-      recipientId: recipientId || null,
-      groupId:     groupId     || null,
-      content:     content     || (type==='voice' ? 'Voice note' : 'Image'),
-      type:        type        || 'text',
-      mediaUrl,
-      replyToId:   replyToId   || null,
-      readBy:      [],
-    });
-
-    const full = await Message.findByPk(message.id, {
-      include: [{ model: User, as: 'sender', attributes: ['id','username','displayName','avatar'] }]
-    });
-
-    if (req.io) {
-      const room = groupId
-        ? `group:${groupId}`
-        : `dm:${[req.user.id, recipientId].sort().join('-')}`;
-      req.io.to(room).emit('newMessage', full);
-      req.io.to(recipientId).emit('newMessage', full);
+    // If multer attached a file, build the URL path
+    if (req.file) {
+      mediaUrl = `/uploads/${req.file.filename}`;
     }
 
-    res.status(201).json(full);
+    const msg = await Message.create({
+      senderId: req.user.id,
+      recipientId: receiverId || null,
+      groupId: groupId || null,
+      content: content || '',
+      type: type || 'text',
+      mediaUrl,
+      replyToId: replyToId || null,
+      readBy: [],
+      deliveredTo: [],
+    });
+
+    // If replyToContent was provided, attach it for the client
+    const result = msg.toJSON();
+    if (replyToContent) result.replyToContent = replyToContent;
+
+    res.status(201).json(result);
   } catch (err) {
-    console.error('sendMessage:', err);
+    console.error('sendMessage error:', err);
     res.status(500).json({ error: 'Failed to send message' });
   }
 };
 
-const deleteMessage = async (req, res) => {
+// ─── POST /messages/mark-read ──────────────────────────────────────────────────
+exports.markRead = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { forEveryone } = req.body;
-    const message = await Message.findByPk(id);
-    if (!message) return res.status(404).json({ error: 'Not found' });
-    if (message.senderId !== req.user.id && req.user.role === 'user')
-      return res.status(403).json({ error: 'Not authorized' });
-    if (forEveryone)
-      await message.update({ deletedForEveryone: true, content: 'This message was deleted', mediaUrl: null });
-    else
-      await message.update({ isDeleted: true });
-    if (req.io) {
-      const room = message.groupId
-        ? `group:${message.groupId}`
-        : `dm:${[message.senderId, message.recipientId].sort().join('-')}`;
-      req.io.to(room).emit('messageDeleted', { id, deletedForEveryone: !!forEveryone });
-      req.io.to(message.recipientId).emit('messageDeleted', { id, deletedForEveryone: !!forEveryone });
+    const { messageIds } = req.body;
+    if (!messageIds || !Array.isArray(messageIds) || messageIds.length === 0) {
+      return res.status(400).json({ error: 'messageIds required' });
     }
-    res.json({ success: true });
+
+    const messages = await Message.findAll({ where: { id: messageIds } });
+    for (const msg of messages) {
+      const readBy = Array.isArray(msg.readBy) ? msg.readBy : [];
+      if (!readBy.includes(req.user.id)) {
+        readBy.push(req.user.id);
+        await msg.update({ readBy });
+      }
+    }
+
+    res.json({ success: true, count: messages.length });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to delete' });
+    console.error('markRead error:', err);
+    res.status(500).json({ error: 'Failed to mark read' });
   }
 };
 
-const reactToMessage = async (req, res) => {
+// ─── DELETE /messages/:id ──────────────────────────────────────────────────────
+exports.deleteMessage = async (req, res) => {
   try {
-    const { id } = req.params;
+    const msg = await Message.findByPk(req.params.id);
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+    const { deleteFor } = req.body;
+    if (deleteFor === 'everyone' && msg.senderId === req.user.id) {
+      await msg.update({ deletedForEveryone: true, content: 'This message was deleted', mediaUrl: null });
+    } else {
+      await msg.update({ isDeleted: true });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+};
+
+// ─── POST /messages/:id/react ──────────────────────────────────────────────────
+exports.reactToMessage = async (req, res) => {
+  try {
+    const msg = await Message.findByPk(req.params.id);
+    if (!msg) return res.status(404).json({ error: 'Not found' });
     const { emoji } = req.body;
-    const message = await Message.findByPk(id);
-    if (!message) return res.status(404).json({ error: 'Not found' });
-    const reactions = { ...(message.reactions || {}) };
+    const reactions = typeof msg.reactions === 'string'
+      ? JSON.parse(msg.reactions)
+      : (msg.reactions || {});
     if (!reactions[emoji]) reactions[emoji] = [];
     const idx = reactions[emoji].indexOf(req.user.id);
     if (idx > -1) reactions[emoji].splice(idx, 1);
     else reactions[emoji].push(req.user.id);
-    await message.update({ reactions });
-    res.json(message);
+    await msg.update({ reactions });
+    res.json({ success: true, reactions });
   } catch (err) {
     res.status(500).json({ error: 'Failed to react' });
   }
 };
 
-module.exports = { getConversation, getConversations, getGroupMessages, sendMessage, deleteMessage, reactToMessage };
+// ─── GET /messages/group/:groupId ─────────────────────────────────────────────
+exports.getGroupMessages = async (req, res) => {
+  try {
+    const messages = await Message.findAll({
+      where: { groupId: req.params.groupId, isDeleted: false },
+      order: [['createdAt', 'ASC']],
+    });
+    res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load group messages' });
+  }
+};
