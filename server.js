@@ -1,10 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { sequelize } = require('./models');
-const { initSocketHandlers } = require('./socket/socketHandlers');
+const { initSocketHandlers } = require('./socket/socketHandlers'); // named import
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -24,17 +25,17 @@ const allowedOrigins = process.env.CLIENT_URL
   : ['http://localhost:3000', 'http://localhost:3001'];
 
 const io = new Server(server, {
-  cors: { origin: allowedOrigins, methods: ['GET', 'POST'], credentials: true }
+  cors: { origin: allowedOrigins, methods: ['GET', 'POST'], credentials: true },
 });
+
+// Make io accessible inside route handlers via req.app.get('io')
+app.set('io', io);
 
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
 
-// Attach io to every request so controllers can emit events
-app.use((req, res, next) => {
-  req.io = io;
-  next();
-});
+// Serve uploaded media files (images, voice notes)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -46,28 +47,21 @@ app.use('/api/referrals', referralRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/friends', friendRoutes);
 
-// Health check — used by UptimeRobot to keep server awake
+// Health check — keeps server awake on Render free tier
 app.get('/api/health', (req, res) => res.json({
   status: 'ok',
   time: new Date(),
   uptime: process.uptime(),
 }));
 
+// Socket.io
+initSocketHandlers(io);
+
 const PORT = process.env.PORT || 5000;
 
-// Sync DB first, THEN start socket handlers and server
-sequelize.sync({ alter: true })
-  .then(() => {
-    console.log('✅ Database synced');
-
-    // Init socket AFTER DB is ready
-    initSocketHandlers(io);
-
-    server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-  })
-  .catch(err => {
-    console.error('❌ DB sync error:', err);
-    process.exit(1); // Force Render to show the real error instead of looping
-  });
+sequelize.sync({ alter: true }).then(() => {
+  console.log('✅ Database synced');
+  server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+}).catch(err => console.error('❌ DB sync error:', err));
 
 module.exports = { app, io };
