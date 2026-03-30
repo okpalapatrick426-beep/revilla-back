@@ -1,17 +1,19 @@
+// server.js  — FIXED VERSION
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
-const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const path = require('path');
 const { sequelize } = require('./models');
-const { initSocketHandlers } = require('./socket/socketHandlers'); // named import
+const { initSocketHandlers } = require('./socket/socketHandlers');
 
 // Routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const messageRoutes = require('./routes/messages');
 const statusRoutes = require('./routes/status');
+const feedRoutes = require('./routes/feed');
 const productRoutes = require('./routes/products');
 const referralRoutes = require('./routes/referrals');
 const adminRoutes = require('./routes/admin');
@@ -26,35 +28,43 @@ const allowedOrigins = process.env.CLIENT_URL
 
 const io = new Server(server, {
   cors: { origin: allowedOrigins, methods: ['GET', 'POST'], credentials: true },
+  maxHttpBufferSize: 25e6, // 25 MB — needed for large socket payloads
 });
 
-// Make io accessible inside route handlers via req.app.get('io')
-app.set('io', io);
-
 app.use(cors({ origin: allowedOrigins, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// Serve uploaded media files (images, voice notes)
+// ── Serve uploaded media files (images & voice notes) ─────────
+// Access via:  https://yourserver.com/uploads/filename.webm
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Routes
+// ── API Routes ─────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/status', statusRoutes);
+app.use('/api/feed', feedRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/friends', friendRoutes);
 
-// Health check — keeps server awake on Render free tier
-app.get('/api/health', (req, res) => res.json({
-  status: 'ok',
-  time: new Date(),
-  uptime: process.uptime(),
-}));
+// ── Health check ───────────────────────────────────────────────
+app.get('/api/health', (_req, res) =>
+  res.json({ status: 'ok', time: new Date(), uptime: process.uptime() })
+);
 
-// Socket.io
+// ── Multer error handler (must be after routes) ────────────────
+app.use((err, _req, res, _next) => {
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'File too large. Max 25 MB.' });
+  }
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// ── Socket.io ─────────────────────────────────────────────────
 initSocketHandlers(io);
 
 const PORT = process.env.PORT || 5000;
