@@ -1,83 +1,50 @@
+// models/index.js  — FIXED VERSION (ensure associations are correct)
+'use strict';
+
 const { Sequelize } = require('sequelize');
 
-// ─── DATABASE CONNECTION ──────────────────────────────────────────────────────
-// DATABASE_URL must be set in Render environment variables
-// Go to: Render Dashboard → revilla-back → Environment → Add DATABASE_URL
-if (!process.env.DATABASE_URL) {
-  console.error('❌ DATABASE_URL environment variable is not set!');
-  console.error('   Go to Render Dashboard → revilla-back → Environment → set DATABASE_URL');
-}
+const sequelize = new Sequelize(
+  process.env.DB_NAME     || 'revilla',
+  process.env.DB_USER     || 'root',
+  process.env.DB_PASSWORD || '',
+  {
+    host:    process.env.DB_HOST    || 'localhost',
+    dialect: process.env.DB_DIALECT || 'mysql',   // or 'postgres' / 'sqlite'
+    logging: false,
+  }
+);
 
-const sequelize = new Sequelize(process.env.DATABASE_URL || 'postgres://localhost/revilla', {
-  dialect: 'postgres',
-  protocol: 'postgres',
-  logging: false,
-  dialectOptions: {
-    ssl: {
-      require: true,
-      rejectUnauthorized: false,
-    },
-  },
-});
-
-// ─── MODELS ───────────────────────────────────────────────────────────────────
+// ── Load models ───────────────────────────────────────────────
 const User       = require('./User')(sequelize);
 const Message    = require('./Message')(sequelize);
+const Friendship = require('./Friendship')(sequelize);
 const Status     = require('./Status')(sequelize);
-const Product    = require('./Product')(sequelize);
-const Referral   = require('./Referral')(sequelize);
-const Friend     = require('./Friend')(sequelize);
-const Role       = require('./Role')(sequelize);
-const Group      = require('./Group')(sequelize);
-const GroupMember = require('./GroupMember')(sequelize);
+const Post       = require('./Post')(sequelize);
+const Comment    = require('./Comment')(sequelize);
 
-// ─── ASSOCIATIONS ─────────────────────────────────────────────────────────────
+// ── Associations ──────────────────────────────────────────────
 
-// Messages
-User.hasMany(Message, { foreignKey: 'senderId', as: 'sentMessages' });
-Message.belongsTo(User, { foreignKey: 'senderId', as: 'sender' });
+// Friendship ↔ User
+Friendship.belongsTo(User, { foreignKey: 'requesterId', as: 'Requester' });
+Friendship.belongsTo(User, { foreignKey: 'receiverId',  as: 'Receiver'  });
+User.hasMany(Friendship,   { foreignKey: 'requesterId', as: 'SentRequests'     });
+User.hasMany(Friendship,   { foreignKey: 'receiverId',  as: 'ReceivedRequests' });
 
-// Status / Stories
-User.hasMany(Status, { foreignKey: 'userId' });
-Status.belongsTo(User, { foreignKey: 'userId' });
+// Message ↔ User
+Message.belongsTo(User, { foreignKey: 'senderId',    as: 'Sender'    });
+Message.belongsTo(User, { foreignKey: 'recipientId', as: 'Recipient' });
 
-// Marketplace
-User.hasMany(Product, { foreignKey: 'sellerId', as: 'products' });
-Product.belongsTo(User, { foreignKey: 'sellerId', as: 'seller' });
+// Status ↔ User
+Status.belongsTo(User, { foreignKey: 'userId', as: 'Author' });
+User.hasMany(Status,   { foreignKey: 'userId', as: 'Statuses' });
 
-// Referrals
-User.hasMany(Referral, { foreignKey: 'referrerId', as: 'referrals' });
-Referral.belongsTo(User, { foreignKey: 'referrerId', as: 'referrer' });
-Referral.belongsTo(User, { foreignKey: 'referredId', as: 'referred' });
+// Post ↔ User
+Post.belongsTo(User, { foreignKey: 'userId', as: 'Author' });
+User.hasMany(Post,   { foreignKey: 'userId', as: 'Posts' });
 
-// Friends (self-referential many-to-many through Friend junction table)
-User.belongsToMany(User, {
-  through: Friend,
-  as: 'friends',
-  foreignKey: 'userId',
-  otherKey: 'friendId',
-});
+// Comment ↔ Post ↔ User
+Comment.belongsTo(Post, { foreignKey: 'postId', as: 'Post' });
+Comment.belongsTo(User, { foreignKey: 'userId', as: 'Author' });
+Post.hasMany(Comment,   { foreignKey: 'postId', as: 'Comments' });
 
-// Groups
-Group.hasMany(GroupMember, { foreignKey: 'groupId' });
-GroupMember.belongsTo(Group, { foreignKey: 'groupId' });
-GroupMember.belongsTo(User, { foreignKey: 'userId' });
-User.hasMany(GroupMember, { foreignKey: 'userId' });
-
-// Group messages
-Group.hasMany(Message, { foreignKey: 'groupId', as: 'messages' });
-Message.belongsTo(Group, { foreignKey: 'groupId', as: 'group' });
-
-// ─── EXPORTS ──────────────────────────────────────────────────────────────────
-module.exports = {
-  sequelize,
-  User,
-  Message,
-  Status,
-  Product,
-  Referral,
-  Friend,
-  Role,
-  Group,
-  GroupMember,
-};
+module.exports = { sequelize, Sequelize, User, Message, Friendship, Status, Post, Comment };
